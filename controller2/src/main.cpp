@@ -5,9 +5,34 @@ extern "C" {
 	#include <user_interface.h>
 }
 
+#include "rtc_memory.hpp"
+
 #define WIFI_DEFAULT_CHANNEL 1
 
 uint8_t mac[] = {0x1A,0xFE,0x34,0xEE,0x84,0x88};
+
+struct deep_sleep_data_t {
+	uint16_t count = 0;
+	uint8_t  send = 0;
+	uint16_t data[12];
+
+	void add_data(uint16_t n) {
+		data[count] = n;
+	}
+
+	template <class T>
+	void run_every_count(uint16_t n, T func) {
+		count++;
+		if (!send) {
+			send = count % (n - 1) == 0;
+		} else {
+			send = 0;
+			count = 0;
+			func();
+		}
+	}
+};
+rtc_memory<deep_sleep_data_t> deep_sleep_data;
 
 void printMacAddress(uint8_t* macaddr) {
 	Serial.print("{");
@@ -19,11 +44,49 @@ void printMacAddress(uint8_t* macaddr) {
 	Serial.println("}");
 }
 
+void post_sensor_data();
+
 void setup() {
 	pinMode(13, OUTPUT);
 
 	Serial.begin(74880);
 	Serial.println("Initializing...");
+
+	// データ読みこみ
+	if (!deep_sleep_data.read()) {
+		Serial.println("system_rtc_mem_read failed");
+	}
+	Serial.print("deep_sleep_data->count = ");
+	Serial.println(deep_sleep_data->count);
+
+	// データの変更処理(任意)
+	deep_sleep_data->add_data(deep_sleep_data->count);
+
+	deep_sleep_data->run_every_count(4, [&]{
+		Serial.println("send data");
+		// なんか定期的に書きこみたい処理
+		post_sensor_data();
+	});
+
+	if (!deep_sleep_data.write()) {
+		Serial.print("system_rtc_mem_write failed");
+	}
+
+	if (deep_sleep_data->send) {
+		ESP.deepSleep(2.5e6, WAKE_RF_DEFAULT);
+	} else {
+		// sendしない場合は WIFI をオフで起動させる
+		ESP.deepSleep(2.5e6, WAKE_RF_DISABLED);
+	}
+
+//	esp_now_unregister_recv_cb();
+//	esp_now_deinit();
+}
+
+void loop() {
+}
+
+void post_sensor_data() {
 	WiFi.mode(WIFI_STA);
 
 	uint8_t macaddr[6];
@@ -67,14 +130,5 @@ void setup() {
 
 	int res = esp_now_add_peer(mac, (uint8_t)ESP_NOW_ROLE_SLAVE,(uint8_t)WIFI_DEFAULT_CHANNEL, NULL, 0);
 
-	uint8_t message[] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x08 };
-	esp_now_send(mac, message, sizeof(message));
-	ESP.deepSleep(2.5e6, WAKE_RF_DEFAULT);
-
-//	esp_now_unregister_recv_cb();
-//	esp_now_deinit();
+	esp_now_send(mac, (uint8_t*)deep_sleep_data->data, sizeof(deep_sleep_data->data));
 }
-
-void loop() {
-}
-
